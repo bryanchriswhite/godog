@@ -15,6 +15,13 @@ import (
 	"github.com/cucumber/godog/internal/utils"
 )
 
+const (
+	// RootTestingTKey is a key used to store *testing.T in context.Context, if provided.
+	RootTestingTKey = "godog/root_testing.T"
+	// StepTestingTKey is a key used to store as subtest *testing.T for a given step in context.Context.
+	StepTestingTKey = "godog/step_testing.T"
+)
+
 var (
 	errorInterface   = reflect.TypeOf((*error)(nil)).Elem()
 	contextInterface = reflect.TypeOf((*context.Context)(nil)).Elem()
@@ -181,7 +188,18 @@ func (s *suite) runStep(ctx context.Context, pickle *Scenario, step *Step, prevS
 		return ctx, nil
 	}
 
-	ctx, err = s.maybeSubSteps(match.Run(ctx))
+	if rootTestingT, ok := ctx.Value(RootTestingTKey).(*testing.T); ok {
+		rootTestingT.Run(step.Text, func(t *testing.T) {
+			ctx = context.WithValue(ctx, StepTestingTKey, t)
+			ctx, err = s.maybeSubSteps(match.Run(ctx))
+			if err != nil {
+				t.Errorf("step %q failed: %v", step.Text, err)
+				t.FailNow()
+			}
+		})
+	} else {
+		return s.maybeSubSteps(match.Run(ctx))
+	}
 
 	return ctx, err
 }
@@ -349,11 +367,26 @@ func (s *suite) maybeSubSteps(ctx context.Context, result interface{}) (context.
 
 	var err error
 
-	for _, text := range steps {
+	matchAndRun := func(text string) error {
 		if def := s.matchStepTextAndType(text, messages.PickleStepType_UNKNOWN); def == nil {
-			return ctx, ErrUndefined
+			return ErrUndefined
 		} else if ctx, err = s.maybeSubSteps(def.Run(ctx)); err != nil {
-			return ctx, fmt.Errorf("%s: %+v", text, err)
+			return fmt.Errorf("%s: %+v", text, err)
+		}
+		return nil
+	}
+
+	for _, text := range steps {
+		if rootTestingT, ok := ctx.Value(RootTestingTKey).(testing.T); ok {
+			rootTestingT.Run(text, func(t *testing.T) {
+				ctx = context.WithValue(ctx, StepTestingTKey, t)
+				if err := matchAndRun(text); err != nil {
+					t.Errorf("step %q failed: %v", text, err)
+					t.FailNow()
+				}
+			})
+		} else {
+			return ctx, matchAndRun(text)
 		}
 	}
 	return ctx, nil
@@ -471,6 +504,7 @@ func (s *suite) runPickle(pickle *messages.Pickle) (err error) {
 	if s.testingT != nil {
 		// Running scenario as a subtest.
 		s.testingT.Run(pickle.Name, func(t *testing.T) {
+			ctx = context.WithValue(ctx, RootTestingTKey, t)
 			ctx, err = s.runSteps(ctx, pickle, pickle.Steps)
 			if s.shouldFail(err) {
 				t.Error(err)
