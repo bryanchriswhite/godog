@@ -188,7 +188,18 @@ func (s *suite) runStep(ctx context.Context, pickle *Scenario, step *Step, prevS
 		return ctx, nil
 	}
 
-	ctx, err = s.maybeSubSteps(match.Run(ctx))
+	if rootTestingT, ok := ctx.Value(RootTestingTKey).(*testing.T); ok {
+		rootTestingT.Run(step.Text, func(t *testing.T) {
+			ctx = context.WithValue(ctx, StepTestingTKey, t)
+			ctx, err = s.maybeSubSteps(match.Run(ctx))
+			if err != nil {
+				t.Errorf("step %q failed: %v", step.Text, err)
+				t.FailNow()
+			}
+		})
+	} else {
+		return s.maybeSubSteps(match.Run(ctx))
+	}
 
 	return ctx, err
 }
@@ -356,11 +367,26 @@ func (s *suite) maybeSubSteps(ctx context.Context, result interface{}) (context.
 
 	var err error
 
-	for _, text := range steps {
+	matchAndRun := func(text string) error {
 		if def := s.matchStepTextAndType(text, messages.PickleStepType_UNKNOWN); def == nil {
-			return ctx, ErrUndefined
+			return ErrUndefined
 		} else if ctx, err = s.maybeSubSteps(def.Run(ctx)); err != nil {
-			return ctx, fmt.Errorf("%s: %+v", text, err)
+			return fmt.Errorf("%s: %+v", text, err)
+		}
+		return nil
+	}
+
+	for _, text := range steps {
+		if rootTestingT, ok := ctx.Value(RootTestingTKey).(testing.T); ok {
+			rootTestingT.Run(text, func(t *testing.T) {
+				ctx = context.WithValue(ctx, StepTestingTKey, t)
+				if err := matchAndRun(text); err != nil {
+					t.Errorf("step %q failed: %v", text, err)
+					t.FailNow()
+				}
+			})
+		} else {
+			return ctx, matchAndRun(text)
 		}
 	}
 	return ctx, nil
