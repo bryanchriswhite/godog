@@ -15,6 +15,13 @@ import (
 	"github.com/cucumber/godog/internal/utils"
 )
 
+const (
+	// RootTestingTKey is a key used to store *testing.T in context.Context, if provided.
+	RootTestingTKey = "godog/root_testing.T"
+	// StepTestingTKey is a key used to store as subtest *testing.T for a given step in context.Context.
+	StepTestingTKey = "godog/step_testing.T"
+)
+
 var (
 	errorInterface   = reflect.TypeOf((*error)(nil)).Elem()
 	contextInterface = reflect.TypeOf((*context.Context)(nil)).Elem()
@@ -471,6 +478,7 @@ func (s *suite) runPickle(pickle *messages.Pickle) (err error) {
 	if s.testingT != nil {
 		// Running scenario as a subtest.
 		s.testingT.Run(pickle.Name, func(t *testing.T) {
+			ctx = context.WithValue(ctx, RootTestingTKey, t)
 			ctx, err = s.runSteps(ctx, pickle, pickle.Steps)
 			if s.shouldFail(err) {
 				t.Error(err)
